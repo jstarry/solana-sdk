@@ -49,8 +49,11 @@ fn replace_logger(logger: env_logger::Logger) {
     let _ = log::set_boxed_logger(Box::new(LoggerShim {}));
 }
 
-// Register a new validator
-pub fn register_validator(validator_name: &str) {
+pub struct ValidatorGuard;
+
+/// Register a new validator
+#[must_use]
+pub fn register_validator(validator_name: &str) -> ValidatorGuard {
     let mut validators = VALIDATOR_REGISTRY.write().unwrap();
     let validator_id = validators.len();
     validators.push(validator_name.to_string());
@@ -59,6 +62,16 @@ pub fn register_validator(validator_name: &str) {
     LOG_PREFIX.with(|prefix| {
         *prefix.borrow_mut() = Some(create_log_prefix(validator_id, validator_name));
     });
+
+    ValidatorGuard
+}
+
+impl Drop for ValidatorGuard {
+    fn drop(&mut self) {
+        LOG_PREFIX.with(|prefix| {
+            *prefix.borrow_mut() = Some("None".to_string());
+        });
+    }
 }
 
 fn create_log_prefix(validator_id: usize, validator_name: &str) -> String {
@@ -89,13 +102,19 @@ fn get_log_prefix() -> String {
 
     // Determine which validator this thread belongs to
     let (validator_id, validator_name) = {
-        let registry = THREAD_NAME_REGISTRY.read().unwrap();
         let validators = VALIDATOR_REGISTRY.read().unwrap();
-        let validator_id = registry
-            .get(thread_name.as_str())
-            .cloned()
-            .unwrap_or(validators.len().checked_sub(1).unwrap());
-        (validator_id, validators[validator_id].clone())
+        if validators.is_empty() {
+            return "".to_string();
+        }
+
+        let mut registry = THREAD_NAME_REGISTRY.write().unwrap();
+        let validator_id = registry.get(thread_name.as_str()).cloned();
+        let next_id = validator_id.map(|id| id + 1).unwrap_or(0);
+        if next_id >= validators.len() {
+            return "".to_string();
+        }
+        registry.insert(thread_name.clone(), next_id);
+        (next_id, validators[next_id].clone())
     };
 
     // Create and store the log prefix for this thread
